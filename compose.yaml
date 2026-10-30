@@ -1,0 +1,48 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    ports:
+      - "127.0.0.1:${BIND_PORT:-18081}:3000"
+    environment:
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?Set ADMIN_API_KEY}
+      DATABASE_URL: postgresql://approver:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/approver
+      DASHBOARD_ORIGINS: ${DASHBOARD_ORIGINS:?Set DASHBOARD_ORIGINS}
+      APPROVAL_DELAY_MS: ${APPROVAL_DELAY_MS:-2500}
+      AUTH_DIR: /data/whatsapp
+    volumes:
+      - whatsapp:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: approver
+      POSTGRES_DB: approver
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U approver -d approver"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  postgres:
+  whatsapp:
