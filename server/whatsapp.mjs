@@ -5,14 +5,14 @@ import { isAdmin } from './policy.mjs';
 import { retryRead } from './retry.mjs';
 export class WhatsApp {
   socket = null; state = 'disconnected'; qr = null; retry = 0; timer = null; stopped = false; generation = 0;
-  constructor(db, log) { this.db=db; this.log=log; }
+  constructor(db, log, authDir = process.env.AUTH_DIR || "/data/whatsapp") { this.db=db; this.log=log; this.authDir=authDir; }
   get ownIds() { return [this.socket?.user?.id,this.socket?.user?.lid].filter(Boolean).map(jidNormalizedUser); }
   async connect() {
     if (['connecting','connected','qr'].includes(this.state)) return;
     this.stopped=false; clearTimeout(this.timer); this.state='connecting';
     const generation=++this.generation;
     try {
-      const { state, saveCreds } = await useMultiFileAuthState(process.env.AUTH_DIR || '/data/whatsapp');
+      const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
       const socket=makeWASocket({auth:state,logger:pino({level:'silent'}),markOnlineOnConnect:false,connectTimeoutMs:30000,defaultQueryTimeoutMs:30000,syncFullHistory:false});
       this.socket=socket;
       socket.ev.on('creds.update',saveCreds);

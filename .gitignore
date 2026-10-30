@@ -1,7 +1,10 @@
-node_modules/
+node_modules
 .env
 .env.*
 !.env.example
 *.tar.gz
 data/
 coverage/
+
+compose.override.yaml
+.openai/

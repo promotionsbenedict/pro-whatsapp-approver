@@ -7,6 +7,7 @@ export class Engine {
   constructor(db,wa,log,wait=delay){this.db=db;this.wa=wa;this.log=log;this.wait=wait;}
   async create(groupId,kind,amount) {
     const c=await this.db.connect();
+    let id,target;
     try {
       await c.query('BEGIN');
       const {rows:[group]}=await c.query('SELECT * FROM groups WHERE id=$1 FOR UPDATE',[groupId]);
@@ -14,15 +15,15 @@ export class Engine {
       const {rows:[active]}=await c.query(`SELECT id FROM jobs WHERE group_id=$1 AND status IN ('queued','running','paused')`,[groupId]);
       if(active)throw new Error('This group already has an active or paused job');
       const {rows:requests}=await c.query(`SELECT jid FROM requests WHERE group_id=$1 AND status='pending' AND ($2::boolean=false OR first_seen>$3) ORDER BY first_seen,jid`,[groupId,kind==='auto',group.auto_since]);
-      const target=parseTarget(kind,amount,requests.length);
+      target=parseTarget(kind,amount,requests.length);
       if(!target)throw new Error('No eligible pending requests');
-      const id=randomUUID();
+      id=randomUUID();
       await c.query('INSERT INTO jobs(id,group_id,kind,target) VALUES($1,$2,$3,$4)',[id,groupId,kind,target]);
       for(let i=0;i<requests.length;i++)await c.query('INSERT INTO job_items(job_id,jid,ordinal) VALUES($1,$2,$3)',[id,requests[i].jid,i]);
       await c.query('COMMIT');
-      await this.log('info','job.created',groupId,id,`${kind} job queued. Target: ${target}.`);
-      return id;
     } catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+    await this.log('info','job.created',groupId,id,`${kind} job queued. Target: ${target}.`);
+    return id;
   }
   async pause(job,reason){await this.db.query("UPDATE jobs SET status='paused',reason=$2,updated_at=now() WHERE id=$1 AND status IN ('running','queued')",[job.id,reason]);await this.log('warn','job.paused',job.group_id,job.id,reason);}
   async tick(){
