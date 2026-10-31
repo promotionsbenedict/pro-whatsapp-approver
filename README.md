@@ -83,12 +83,22 @@ The dashboard and API must be served on the **same HTTPS origin**. The supplied 
 
 One process owns the global PostgreSQL worker lock. Each account has its own serial approval worker, so one user’s long queue does not block another’s. `MAX_CONNECTED_ACCOUNTS` defaults to 20 simultaneous background WhatsApp connections to bound VPS resources; ordinary registration and login remain available when connection slots are full. Increase the limit only after checking RAM and PostgreSQL connection capacity. Run one app replica per database/session volume.
 
+## Faster approval worker (v2.1)
+
+Approvals are submitted in bounded batches, default **10 participants**, using Baileys’ real multi-participant approval operation. The batch size is capped by the exact remaining target and freshly checked member capacity. Each returned participant still needs a success response and verified membership before being counted. In-flight batches are persisted before dispatch; missing/ambiguous outcomes are paused for review without blind retries. A pause or cancel may allow an already dispatched batch to finish.
+
+The worker no longer downloads and rewrites the entire pending queue for every participant. Historical snapshot creation and pending reconciliation use bulk database operations instead of one insert per person. Pending sync still occurs at job creation/resume and during background reconciliation. Fresh metadata/admin/capacity checks remain before each batch.
+
+`APPROVAL_BATCH_SIZE` defaults to 10 (allowed 1–20) and `APPROVAL_BATCH_DELAY_MS` defaults to 250 ms **per batch**. The legacy `APPROVAL_DELAY_MS=2500` in an existing `.env` is no longer used; the updated Compose file supplies the new defaults automatically. Active-job dashboard polling refreshes every 1.5 seconds, while idle polling stays at 5 seconds. New manual jobs wake the worker immediately; join-request events wake automatic jobs after syncing their requests.
+
+A controlled 75-approval test uses eight approval writes and 16 metadata reads, versus 75 writes and approximately 225 reads in the former per-person loop (excluding initial sync). This is a request-count regression test, not a live WhatsApp timing guarantee. Actual throughput depends on WhatsApp responses, network latency, and any server limits.
+
 ## Approval semantics
 
-- **Automatic:** sync the baseline before activation. Only requests first seen after activation enter automatic jobs; periodic reconciliation recovers new arrivals after a disconnection. Existing historical requests remain untouched. Turning auto off cancels its queued/running jobs; one in-flight operation may finish.
+- **Automatic:** sync the baseline before activation. Only requests first seen after activation enter automatic jobs; periodic reconciliation recovers new arrivals after a disconnection. Existing historical requests remain untouched. Turning auto off cancels its queued/running jobs; an in-flight batch may finish.
 - **Historical / Approve All:** snapshot the current pending queue and process eligible requests up to capacity. Future requests are outside that historical job.
 - **Historical / exact amount:** stop at the requested number of confirmed successes. Failed requests do not count; the worker can select another eligible request from the original snapshot. Requests above the target stay pending. Pause with a reason if the target can no longer be reached.
-- **Capacity:** refresh metadata before dispatch. Stop at the configured maximum of 1–1,024 members. Existing members and admins count toward the limit. Other admins can act concurrently; WhatsApp does not expose atomic slot reservations.
+- **Capacity:** refresh metadata before each batch. Stop at the configured maximum of 1–1,024 members. Existing members and admins count toward the limit. Other admins can act concurrently; WhatsApp does not expose atomic slot reservations.
 - **Verification:** count only after WhatsApp returns success and membership is verified. Recognize phone-number/LID aliases when returned by WhatsApp.
 - **Uncertain result:** persist before dispatch, then pause on an ambiguous write or interrupted verification. Never blindly retry or credit an uncertain approval. The account owner can review the outcome, verify membership, retry only if still pending, or exclude the item.
 - **Recovery:** jobs and credentials survive app restarts; interrupted in-flight items require review. Read-only queries and dropped connections retry with bounded backoff. Permission/capacity problems pause safely.

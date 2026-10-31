@@ -33,7 +33,9 @@ app.post('/api/jobs',async(req,reply,{db,wa,engine,log,authDir})=>{
   if(!['all','custom'].includes(kind))throw new Error('Choose Approve All or an exact amount');
   if(typeof group_id!=='string')throw new Error('Choose a group');
   await wa.syncGroup(group_id);
-  return {id:await engine.create(group_id,kind,amount)};
+  const id=await engine.create(group_id,kind,amount);
+  engine.tick().catch(e=>log('error','worker.error',group_id,id,e.message).catch(()=>{}));
+  return {id};
 });
 app.get('/api/jobs/:id/items',async(req,reply,{db})=>{if(!(await db.query('SELECT id FROM jobs WHERE id=$1',[req.params.id])).rowCount)throw Object.assign(new Error('Job not found'),{statusCode:404});return {items:(await db.query('SELECT jid,status,attempts FROM job_items WHERE job_id=$1 ORDER BY ordinal',[req.params.id])).rows};});
 app.post('/api/jobs/:id/control',async(req,reply,{db,wa,engine,log,authDir})=>{
@@ -49,7 +51,7 @@ app.post('/api/jobs/:id/control',async(req,reply,{db,wa,engine,log,authDir})=>{
     await wa.syncGroup(job.group_id);
   }
   const status={pause:'paused',resume:'queued',cancel:'cancelled'}[action];
-  await db.query('UPDATE jobs SET status=$2,reason=$3,updated_at=now() WHERE id=$1',[job.id,status,action==='resume'?null:`${action} requested by admin. An approval already in flight may still finish.`]);
+  await db.query('UPDATE jobs SET status=$2,reason=$3,updated_at=now() WHERE id=$1',[job.id,status,action==='resume'?null:`${action} requested by admin. A batch already in flight may still finish.`]);
   await log('info',`job.${action}`,job.group_id,job.id,`${action} requested by admin`);return {ok:true};
 });
 app.post('/api/jobs/:id/reconcile',async(req,reply,{db,wa,engine,log,authDir})=>{

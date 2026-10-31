@@ -25,7 +25,7 @@ export async function buildApp({db,accounts,manager,origins,secureCookie=true,lo
   }
  });
  app.setErrorHandler((e,req,reply)=>{req.log.error({message:e.message},'Request failed');const internal=e.code&&e.code!=='23505'&&!e.statusCode;reply.code(internal?500:e.statusCode||400).send({error:internal?'The request could not be completed. Please try again.':e.code==='23505'?'This group already has an active job':e.message});});
- app.get('/api/health',async()=>{await db.query('SELECT 1');return {ok:true,version:'2.0.0'};});
+ app.get('/api/health',async()=>{await db.query('SELECT 1');return {ok:true,version:'2.1.0'};});
  app.post('/api/auth/register',{config:{rateLimit:{max:5,timeWindow:'1 hour'}}},async(req,reply)=>{const user=await accounts.register(req.body);reply.header('Set-Cookie',cookie(await accounts.session(user)));return {user:publicUser(user)};});
  app.post('/api/auth/login',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{const user=await accounts.login(req.body);reply.header('Set-Cookie',cookie(await accounts.session(user)));return {user:publicUser(user)};});
  app.get('/api/auth/me',async req=>({user:publicUser(req.user)}));

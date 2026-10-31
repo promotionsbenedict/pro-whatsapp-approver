@@ -42,6 +42,7 @@ export class Tenants {
    await db.query(await readFile(new URL('./schema.sql',import.meta.url),'utf8'));
    const log=(level,event,groupId,jobId,detail)=>db.query('INSERT INTO activity(level,event,group_id,job_id,detail) VALUES($1,$2,$3,$4,$5)',[level,event,groupId,jobId,String(detail).slice(0,1000)]);
    const authDir=authDirectory(user),wa=this.waFactory(db,log,authDir),engine=this.engineFactory(db,wa,log);
+   wa.onRequests=()=>engine.tick().catch(e=>log('error','worker.error',null,null,e.message).catch(()=>{}));
    await engine.recover();const context={db,wa,engine,log,authDir,user,syncing:false,started:false};this.runtimes.set(user.id,context);return context;
   }catch(e){await db.end();throw e;}
  }

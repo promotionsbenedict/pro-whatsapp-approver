@@ -34,7 +34,7 @@ export class WhatsApp {
       });
       socket.ev.on('group.join-request',async event=>{
         if(generation!==this.generation || this.state!=='connected') return;
-        await this.syncGroup(event.id).catch(e=>this.log('error','requests.sync_failed',event.id,null,e.message));
+        await this.syncGroup(event.id).then(()=>this.onRequests?.()).catch(e=>this.log('error','requests.sync_failed',event.id,null,e.message));
       });
     } catch(e){this.state='disconnected';await this.log('error','connection.failed',null,null,e.message);if(!this.stopped)this.timer=setTimeout(()=>this.connect(),15000);}
   }
@@ -49,23 +49,28 @@ export class WhatsApp {
       if(isAdmin(meta,this.ownIds)) await this.syncGroup(meta.id).catch(e=>this.db.query('UPDATE groups SET error=$2 WHERE id=$1',[meta.id,e.message]));
     }
   }
-  async syncGroup(id) {
-    const socket=this.require();
-    const meta=await retryRead(()=>socket.groupMetadata(id));
+  async readMetadata(id) {
+    const meta=await retryRead(()=>this.require().groupMetadata(id));
     if(!isAdmin(meta,this.ownIds)){
       await this.db.query('UPDATE groups SET is_admin=false,error=$2 WHERE id=$1',[id,'Connected account must be a group admin']);
       throw new Error('Connected account must be a group admin');
     }
+    return meta;
+  }
+  async syncGroup(id) {
+    const socket=this.require();
+    const meta=await this.readMetadata(id);
     const pending=await retryRead(()=>socket.groupRequestParticipantsList(id));
     const client=await this.db.connect();
     try {
       await client.query('BEGIN');
       await client.query('SELECT id FROM groups WHERE id=$1 FOR UPDATE',[id]);
-      for(const p of pending) {
-        if(!p.jid) continue;
-        const stamp=Number(p.request_time);
-        await client.query(`INSERT INTO requests(group_id,jid,requested_at) VALUES($1,$2,$3) ON CONFLICT(group_id,jid) DO UPDATE SET status=CASE WHEN requests.status IN ('gone','approved') THEN 'pending' ELSE requests.status END,first_seen=CASE WHEN requests.status IN ('gone','approved') THEN now() ELSE requests.first_seen END`,[id,p.jid,stamp>0?new Date(stamp*1000):null]);
-      }
+      const snapshot=[...new Map(pending.filter(p=>p.jid).map(p=>[p.jid,p])).values()].map(p=>({jid:p.jid,requested_at:Number(p.request_time)>0?new Date(Number(p.request_time)*1000).toISOString():null}));
+      if(snapshot.length)await client.query(`INSERT INTO requests(group_id,jid,requested_at)
+        SELECT $1,p.jid,p.requested_at FROM jsonb_to_recordset($2::jsonb) AS p(jid text,requested_at timestamptz)
+        ON CONFLICT(group_id,jid) DO UPDATE SET
+          status=CASE WHEN requests.status IN ('gone','approved') THEN 'pending' ELSE requests.status END,
+          first_seen=CASE WHEN requests.status IN ('gone','approved') THEN now() ELSE requests.first_seen END`,[id,JSON.stringify(snapshot)]);
       await client.query(`UPDATE requests SET status='gone' WHERE group_id=$1 AND status='pending' AND NOT(jid=ANY($2::text[]))`,[id,pending.map(p=>p.jid).filter(Boolean)]);
       await client.query('UPDATE groups SET baseline_at=COALESCE(baseline_at,now()),synced_at=now(),member_count=$2,is_admin=true,error=null WHERE id=$1',[id,meta.size??meta.participants.length]);
       await client.query('COMMIT');

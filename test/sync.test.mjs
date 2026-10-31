@@ -1,0 +1,20 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { PGlite } from '@electric-sql/pglite';
+import { readFile } from 'node:fs/promises';
+import { WhatsApp } from '../server/whatsapp.mjs';
+test('large pending snapshots are bulk-upserted once and retain automatic-approval baseline',async t=>{
+ const pg=new PGlite();t.after(()=>pg.close());await pg.exec(await readFile(new URL('../server/schema.sql',import.meta.url),'utf8'));
+ let upserts=0;
+ const query=async(sql,args)=>{if(sql.startsWith('INSERT INTO requests'))upserts++;return pg.query(sql,args);};
+ const db={query,connect:async()=>({query,release(){}})};
+ await db.query("INSERT INTO groups(id,name,is_admin) VALUES('g','Bulk group',true)");
+ const wa=new WhatsApp(db,async()=>{});wa.state='connected';
+ let pending=Array.from({length:100},(_,i)=>({jid:`${i}@s.whatsapp.net`,request_time:'1700000000'}));
+ wa.socket={user:{id:'12345@s.whatsapp.net'},groupMetadata:async()=>({size:1,participants:[{id:'12345@s.whatsapp.net',admin:'admin'}]}),groupRequestParticipantsList:async()=>pending};
+ await wa.syncGroup('g');assert.equal(upserts,1);assert.equal((await db.query('SELECT count(*)::int n FROM requests')).rows[0].n,100);
+ await db.query("UPDATE groups SET auto_enabled=true,auto_since=now() WHERE id='g'");
+ pending=[...pending,{jid:'new@s.whatsapp.net'}];await wa.syncGroup('g');assert.equal(upserts,2);
+ assert.equal((await db.query('SELECT count(*)::int n FROM requests r JOIN groups g ON g.id=r.group_id WHERE r.first_seen>g.auto_since')).rows[0].n,1);
+ pending=pending.slice(1);await wa.syncGroup('g');assert.equal((await db.query("SELECT status FROM requests WHERE jid='0@s.whatsapp.net'")).rows[0].status,'gone');
+});
