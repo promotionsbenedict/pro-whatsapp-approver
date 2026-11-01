@@ -30,7 +30,7 @@ curl --fail http://127.0.0.1:18081/api/health
 
 The first startup creates the account tables and moves existing approval tables into a protected `legacy` schema. It preserves rows, jobs, indexes, foreign keys and session files. No public signup gets this workspace automatically. Original jobs wait until the owner claims the workspace and explicitly reconnects.
 
-For the original owner: choose **Create account**, expand **Moving your workspace from the original version?**, and enter the original admin key while creating your login. This claims the existing workspace and its original WhatsApp credential directory exactly once. Other users simply register without that field. If you already registered an ordinary empty account, sign out and use a separate email to claim the old workspace, or contact the operator for an account migration; the claim is deliberately not silently attached to an existing login.
+The public registration page asks only for name, email, and password. The one-time original-owner migration field has been retired from the customer interface after account migration. Existing accounts and their linked workspaces remain intact. Backend migration support is retained solely for operator compatibility; it is not part of the customer registration flow.
 
 The original key no longer authorizes `/api/state` or any approval operation. Do not share it. New users use their own email/password and cannot read the owner’s records.
 
