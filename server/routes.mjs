@@ -1,4 +1,3 @@
-import { rm } from 'node:fs/promises';
 import { participantMatches } from './policy.mjs';
 export function registerApprovalRoutes(server,manager){
  const app={};
@@ -13,10 +12,9 @@ app.get('/api/state',async(req,reply,{db,wa,engine,log,authDir})=>{
   return {connection:{state:wa.state,qr:wa.qr,account:wa.state==='connected'?wa.socket?.user?.name:null},groups:groups.rows,jobs:jobs.rows,activity:activity.rows,totals:totals.rows[0]};
 });
 app.post('/api/connect',async(req,reply,{db,wa,engine,log,authDir})=>{await manager.start(req.user);return {ok:true};});
-app.post('/api/session/reset',async(req,reply,{db,wa,engine,log,authDir})=>{
-  if(wa.state==='connected')throw new Error('Unlink this device in WhatsApp before clearing a live session');
-  await manager.disconnect(req.user);await rm(authDir,{recursive:true,force:true});
-  await log('warn','session.reset',null,null,'Saved WhatsApp session cleared by admin');return {ok:true};
+app.post('/api/session/reset', async req => {
+  await manager.reset(req.user);
+  return {ok:true};
 });
 app.post('/api/sync',async(req,reply,{db,wa,engine,log,authDir})=>{await wa.sync();return {ok:true};});
 app.post('/api/groups/:id/settings',async(req,reply,{db,wa,engine,log,authDir})=>{

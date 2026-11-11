@@ -1,5 +1,5 @@
 import { ScopedDatabase } from './scoped-db.mjs';
-import { readFile } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { WhatsApp } from './whatsapp.mjs';
 import { Engine } from './engine.mjs';
@@ -46,14 +46,46 @@ export class Tenants {
    await engine.recover();const context={db,wa,engine,log,authDir,user,syncing:false,started:false};this.runtimes.set(user.id,context);return context;
   }catch(e){await db.end();throw e;}
  }
- async start(user){
-  const ctx=await this.get(user);
-  if(!ctx.started&&[...this.runtimes.values()].filter(r=>r.started).length>=this.maxConnected)throw Object.assign(new Error('The server has reached its active WhatsApp connection capacity. Please try later.'),{statusCode:503});
-  ctx.started=true;
-  await this.globalDb.query('UPDATE public.app_users SET wa_started=true WHERE id=$1',[user.id]);
-  await ctx.wa.connect();return ctx;
+ async withConnection(user, operation) {
+  const ctx = await this.get(user);
+  const result = (ctx.connectionOperation ?? Promise.resolve()).then(() => operation(ctx));
+  ctx.connectionOperation = result.catch(() => {});
+  return result;
  }
- async disconnect(user){const c=await this.get(user);await c.wa.stop();c.started=false;await this.globalDb.query('UPDATE public.app_users SET wa_started=false WHERE id=$1',[user.id]);return c;}
+
+ async start(user) {
+  return this.withConnection(user, async ctx => {
+   if (!ctx.started && [...this.runtimes.values()].filter(r => r.started).length >= this.maxConnected) {
+    throw Object.assign(new Error('The server has reached its active WhatsApp connection capacity. Please try later.'), {statusCode:503});
+   }
+   ctx.started = true;
+   await this.globalDb.query('UPDATE public.app_users SET wa_started=true WHERE id=$1', [user.id]);
+   await ctx.wa.connect();
+   return ctx;
+  });
+ }
+
+ async stopConnection(ctx) {
+  await ctx.wa.stop();
+  ctx.started = false;
+  await this.globalDb.query('UPDATE public.app_users SET wa_started=false WHERE id=$1', [ctx.user.id]);
+ }
+
+ async disconnect(user) {
+  return this.withConnection(user, async ctx => {
+   await this.stopConnection(ctx);
+   return ctx;
+  });
+ }
+
+ async reset(user) {
+  return this.withConnection(user, async ctx => {
+   if (ctx.wa.state === 'connected') throw new Error('Unlink this device in WhatsApp before clearing a live session');
+   await this.stopConnection(ctx);
+   await rm(ctx.authDir, {recursive:true,force:true});
+   await ctx.log('warn', 'session.reset', null, null, 'Saved WhatsApp session cleared by admin');
+  });
+ }
  async restore(){const {rows}=await this.globalDb.query('SELECT * FROM public.app_users WHERE wa_started ORDER BY created_at');for(const u of rows.slice(0,this.maxConnected))await this.start(u).catch(e=>console.error('Account connection restore failed:',e.message));}
  tick(){for(const ctx of this.runtimes.values())ctx.engine.tick();}
  async sync(){await Promise.allSettled([...this.runtimes.values()].map(async c=>{if(c.syncing||c.wa.state!=='connected')return;c.syncing=true;try{await c.wa.sync();}catch(e){await c.log('warn','sync.failed',null,null,e.message);}finally{c.syncing=false;}}));}
