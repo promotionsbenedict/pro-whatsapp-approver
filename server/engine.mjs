@@ -12,6 +12,7 @@ export class Engine {
       await c.query('BEGIN');
       const {rows:[group]}=await c.query('SELECT * FROM groups WHERE id=$1 FOR UPDATE',[groupId]);
       if(!group?.is_admin)throw new Error('Choose a group where the connected account is an admin');
+      await this.completeSatisfied(c,'group_id',groupId);
       const {rows:[active]}=await c.query(`SELECT id FROM jobs WHERE group_id=$1 AND status IN ('queued','running','paused')`,[groupId]);
       if(active)throw new Error('This group already has an active or paused job');
       const {rows:requests}=await c.query(`SELECT jid FROM requests WHERE group_id=$1 AND status='pending' AND ($2::boolean=false OR first_seen>$3) ORDER BY first_seen,jid`,[groupId,kind==='auto',group.auto_since]);
@@ -24,6 +25,14 @@ export class Engine {
     } catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
     await this.log('info','job.created',groupId,id,`${kind} job queued. Target: ${target}.`);
     return id;
+  }
+  async completeSatisfied(db, scope, id){
+    const column=scope==='group_id'?'group_id':'id';
+    const {rows}=await db.query(`UPDATE jobs SET status='completed',reason=null,updated_at=now()
+      WHERE ${column}=$1 AND status IN ('queued','running','paused') AND confirmed>=target
+        AND NOT EXISTS(SELECT 1 FROM job_items WHERE job_id=jobs.id AND status IN ('sending','uncertain'))
+      RETURNING id`,[id]);
+    return rows.length>0;
   }
   async pause(job,reason){await this.db.query("UPDATE jobs SET status='paused',reason=$2,updated_at=now() WHERE id=$1 AND status IN ('running','queued')",[job.id,reason]);await this.log('warn','job.paused',job.group_id,job.id,reason);}
   async tick(){
@@ -49,8 +58,8 @@ export class Engine {
         const {rows:[current]}=await this.db.query('SELECT * FROM jobs WHERE id=$1',[job.id]);
         if(current.status!=='running')return;
         if(current.confirmed>=current.target){
-          await this.db.query("UPDATE jobs SET status='completed',reason=null,updated_at=now() WHERE id=$1",[job.id]);
-          await this.log('info','job.completed',job.group_id,job.id,`${current.confirmed} approvals confirmed`);return;
+          if(await this.completeSatisfied(this.db,'id',job.id))await this.log('info','job.completed',job.group_id,job.id,`${current.confirmed} approvals confirmed`);
+          return;
         }
         if(this.wa.state!=='connected'){
           await this.db.query("UPDATE jobs SET status='queued',reason='Waiting for WhatsApp reconnect' WHERE id=$1 AND status='running'",[job.id]);return;
@@ -109,6 +118,7 @@ export class Engine {
     const outcomes=[...confirmed,...rejected,...uncertain];
     if(outcomes.length!==ids.length||new Set(outcomes).size!==ids.length||outcomes.some(jid=>!ids.includes(jid)))throw new Error('Invalid batch outcome accounting');
     const c=await this.db.connect();
+    let completed=false;
     try{
       await c.query('BEGIN');
       const results=await c.query("UPDATE job_items SET status='confirmed' WHERE job_id=$1 AND jid=ANY($2::text[]) AND status='sending' RETURNING jid",[job.id,confirmed]);
@@ -121,9 +131,11 @@ export class Engine {
       if(credited.length){
         const updated=await c.query('UPDATE jobs SET confirmed=confirmed+$2,updated_at=now() WHERE id=$1 AND confirmed+$2<=target RETURNING id',[job.id,credited.length]);
         if(!updated.rows.length)throw new Error('Approval target invariant failed; review the batch');
+        completed=await this.completeSatisfied(c,'id',job.id);
       }
       await c.query('COMMIT');
     }catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+    if(completed)await this.log('info','job.completed',job.group_id,job.id,`${job.target} approvals confirmed`);
   }
   async recover(){
     await this.db.query("UPDATE job_items SET status='uncertain' WHERE status='sending'");

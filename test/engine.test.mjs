@@ -82,3 +82,29 @@ test('new automatic requests are queued and processed in the same worker tick',a
  const f=await fixture(t);await f.db.query("UPDATE groups SET auto_enabled=true,auto_since=now()-interval '1 hour' WHERE id='g'");
  await f.engine.tick();const {rows:[job]}=await f.db.query('SELECT * FROM jobs');assert.equal(job.kind,'auto');assert.equal(job.status,'completed');assert.equal(job.confirmed,5);assert.equal(f.batches.length,1);
 });
+
+test('the final verified batch completes before the worker delay',async t=>{
+ const f=await fixture(t);
+ const id=await f.engine.create('g','all');
+ f.engine.batchDelay=1;
+ let statusDuringDelay;
+ f.engine.wait=async()=>{statusDuringDelay=(await f.job(id)).status;};
+ await f.engine.tick();
+ assert.equal(statusDuringDelay,'completed');
+ assert.equal((await f.job(id)).confirmed,5);
+});
+
+test('a satisfied legacy job releases its slot for only the new pending requests',async t=>{
+ const f=await fixture(t);
+ const first=await f.engine.create('g','all');
+ await f.engine.tick();
+ await f.db.query("UPDATE jobs SET status='paused' WHERE id=$1",[first]);
+ await f.db.query("INSERT INTO requests(group_id,jid) VALUES('g','new1'),('g','new2')");
+ const next=await f.engine.create('g','all');
+ assert.equal((await f.job(first)).status,'completed');
+ assert.equal((await f.job(first)).confirmed,5);
+ assert.equal((await f.job(next)).target,2);
+ await f.engine.tick();
+ assert.deepEqual(f.batches.at(-1),['new1','new2']);
+ assert.equal((await f.job(next)).confirmed,2);
+});
